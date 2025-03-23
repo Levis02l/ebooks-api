@@ -6,4 +6,5 @@ export type Ebook = {
   description: string;
   published: boolean;
   rating: number;
+  [key: `description_${string}`]: string | undefined; 
 };

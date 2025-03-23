@@ -9,8 +9,6 @@ const ddbDocClient = createDdbDocClient();
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    console.log("[EVENT]", JSON.stringify(event));
-
     const category = event?.pathParameters?.category;
     const ratingParam = event?.queryStringParameters?.rating;
 
@@ -24,6 +22,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const command = new QueryCommand({
       TableName: process.env.TABLE_NAME,
+      IndexName: process.env.CATEGORY_INDEX,
       KeyConditionExpression: "#category = :categoryVal",
       ExpressionAttributeNames: {
         "#category": "category",
@@ -34,7 +33,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     });
 
     const data = await ddbDocClient.send(command);
-
     let items = data.Items || [];
 
     if (ratingParam) {

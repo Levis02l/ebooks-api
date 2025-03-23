@@ -7,6 +7,7 @@ import { Construct } from "constructs";
 import { generateBatch } from "../shared/util";
 import { ebooks } from "../seed/ebooks";
 import * as apig from "aws-cdk-lib/aws-apigateway";
+import * as iam from "aws-cdk-lib/aws-iam";
 
 export class EbooksApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -14,10 +15,14 @@ export class EbooksApiStack extends cdk.Stack {
 
     const ebooksTable = new dynamodb.Table(this, "EbooksTable", {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      partitionKey: { name: "category", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "id", type: dynamodb.AttributeType.NUMBER },
+      partitionKey: { name: "id", type: dynamodb.AttributeType.NUMBER },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       tableName: "Ebooks",
+    });
+
+    ebooksTable.addGlobalSecondaryIndex({
+      indexName: "category-index",
+      partitionKey: { name: "category", type: dynamodb.AttributeType.STRING },
     });
 
     new custom.AwsCustomResource(this, "EbooksInitData", {
@@ -60,6 +65,18 @@ export class EbooksApiStack extends cdk.Stack {
       },
     });
 
+    const getEbookByIdFn = new lambdanode.NodejsFunction(this, "GetEbookByIdFn", {
+      architecture: lambda.Architecture.ARM_64,
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: `${__dirname}/../lambdas/getEbookById.ts`,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        TABLE_NAME: ebooksTable.tableName,
+        REGION: "eu-west-1",
+      },
+    });
+
     const getEbooksByCategoryFn = new lambdanode.NodejsFunction(this, "GetEbooksByCategoryFn", {
       architecture: lambda.Architecture.ARM_64,
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -69,6 +86,7 @@ export class EbooksApiStack extends cdk.Stack {
       environment: {
         TABLE_NAME: ebooksTable.tableName,
         REGION: "eu-west-1",
+        CATEGORY_INDEX: "category-index",
       },
     });
 
@@ -84,10 +102,31 @@ export class EbooksApiStack extends cdk.Stack {
       },
     });
 
-    ebooksTable.grantReadData(getAllEbooksFn);
-    ebooksTable.grantReadData(getEbooksByCategoryFn);
-    ebooksTable.grantWriteData(addEbookFn);
+    const translateEbookFn = new lambdanode.NodejsFunction(this, "TranslateEbookFn", {
+      architecture: lambda.Architecture.ARM_64,
+      runtime: lambda.Runtime.NODEJS_22_X,
+      entry: `${__dirname}/../lambdas/translateEbook.ts`,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        TABLE_NAME: ebooksTable.tableName,
+        REGION: "eu-west-1",
+      },
+    });
+
+    translateEbookFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["translate:TranslateText"],
+        resources: ["*"],
+      })
+    );
+
+    ebooksTable.grantReadWriteData(getAllEbooksFn);
+    ebooksTable.grantReadWriteData(addEbookFn);
+    ebooksTable.grantReadWriteData(getEbookByIdFn);
     ebooksTable.grantReadWriteData(updateEbookFn);
+    ebooksTable.grantReadWriteData(translateEbookFn);
+    ebooksTable.grantReadWriteData(getEbooksByCategoryFn);
 
     const api = new apig.RestApi(this, "EbooksAPI", {
       description: "Ebooks REST API",
@@ -104,13 +143,15 @@ export class EbooksApiStack extends cdk.Stack {
 
     const ebooksEndpoint = api.root.addResource("ebooks");
 
-    ebooksEndpoint.addMethod("GET", new apig.LambdaIntegration(getAllEbooksFn, { proxy: true }));
-    ebooksEndpoint.addMethod("POST", new apig.LambdaIntegration(addEbookFn, { proxy: true }));
+    ebooksEndpoint.addMethod("GET", new apig.LambdaIntegration(getAllEbooksFn));
+    ebooksEndpoint.addMethod("POST", new apig.LambdaIntegration(addEbookFn));
 
-    const categoryEndpoint = ebooksEndpoint.addResource("{category}");
-    categoryEndpoint.addMethod("GET", new apig.LambdaIntegration(getEbooksByCategoryFn, { proxy: true }));
+    const ebookByIdEndpoint = ebooksEndpoint.addResource("{id}");
+    ebookByIdEndpoint.addMethod("GET", new apig.LambdaIntegration(getEbookByIdFn));
+    ebookByIdEndpoint.addMethod("PUT", new apig.LambdaIntegration(updateEbookFn));
+    ebookByIdEndpoint.addResource("translation").addMethod("GET", new apig.LambdaIntegration(translateEbookFn));
 
-    const ebookByIdEndpoint = categoryEndpoint.addResource("{id}");
-    ebookByIdEndpoint.addMethod("PUT", new apig.LambdaIntegration(updateEbookFn, { proxy: true }));
+    const categoryEndpoint = ebooksEndpoint.addResource("category").addResource("{category}");
+    categoryEndpoint.addMethod("GET", new apig.LambdaIntegration(getEbooksByCategoryFn));
   }
 }
