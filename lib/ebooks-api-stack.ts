@@ -134,24 +134,69 @@ export class EbooksApiStack extends cdk.Stack {
         stageName: "dev",
       },
       defaultCorsPreflightOptions: {
-        allowHeaders: ["Content-Type", "X-Amz-Date"],
+        allowHeaders: ["Content-Type", "X-Amz-Date", "x-api-key"],
         allowMethods: ["OPTIONS", "GET", "POST", "PUT"],
         allowCredentials: true,
         allowOrigins: ["*"],
       },
     });
 
+    const apiKey = api.addApiKey("EbooksApiKey", {
+      apiKeyName: "ebooks-api-key",
+      description: "API Key for protected endpoints",
+    });
+
+    const usagePlan = api.addUsagePlan("EbooksUsagePlan", {
+      name: "EbooksUsagePlan",
+      throttle: {
+        rateLimit: 10,
+        burstLimit: 2,
+      },
+      quota: {
+        limit: 1000,
+        period: apig.Period.MONTH,
+      },
+    });
+
+    usagePlan.addApiKey(apiKey);
+
     const ebooksEndpoint = api.root.addResource("ebooks");
 
     ebooksEndpoint.addMethod("GET", new apig.LambdaIntegration(getAllEbooksFn));
-    ebooksEndpoint.addMethod("POST", new apig.LambdaIntegration(addEbookFn));
+
+    const postMethod = ebooksEndpoint.addMethod("POST", new apig.LambdaIntegration(addEbookFn), {
+      apiKeyRequired: true,
+    });
 
     const ebookByIdEndpoint = ebooksEndpoint.addResource("{id}");
     ebookByIdEndpoint.addMethod("GET", new apig.LambdaIntegration(getEbookByIdFn));
-    ebookByIdEndpoint.addMethod("PUT", new apig.LambdaIntegration(updateEbookFn));
-    ebookByIdEndpoint.addResource("translation").addMethod("GET", new apig.LambdaIntegration(translateEbookFn));
 
-    const categoryEndpoint = ebooksEndpoint.addResource("category").addResource("{category}");
+    const putMethod = ebookByIdEndpoint.addMethod("PUT", new apig.LambdaIntegration(updateEbookFn), {
+      apiKeyRequired: true,
+    });
+
+    usagePlan.addApiStage({
+      stage: api.deploymentStage,
+      throttle: [
+        {
+          method: postMethod,
+          throttle: { rateLimit: 5, burstLimit: 2 },
+        },
+        {
+          method: putMethod,
+          throttle: { rateLimit: 5, burstLimit: 2 },
+        },
+      ],
+    });
+
+    ebookByIdEndpoint
+      .addResource("translation")
+      .addMethod("GET", new apig.LambdaIntegration(translateEbookFn));
+
+    const categoryEndpoint = ebooksEndpoint
+      .addResource("category")
+      .addResource("{category}");
+
     categoryEndpoint.addMethod("GET", new apig.LambdaIntegration(getEbooksByCategoryFn));
   }
 }
